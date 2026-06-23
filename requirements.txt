@@ -1,0 +1,13 @@
+# ── Core ─────────────────────────────────────────────────────────────────────
+python-binance==1.0.19
+openai>=1.30.0
+aiohttp>=3.9.0
+python-dotenv>=1.0.0
+rich>=13.7.0
+
+# ── Data ─────────────────────────────────────────────────────────────────────
+# Technical indicators are computed in indicators.py (pure pandas/numpy),
+# so we no longer depend on the unmaintained pandas_ta package.
+# numpy<2 keeps everything boringly compatible.
+numpy>=1.26,<2.0
+pandas>=2.0,<2.3
