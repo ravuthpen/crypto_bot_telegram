@@ -694,6 +694,17 @@ async def get_usdt_balance(client: AsyncClient) -> float:
         console.print(f"[yellow]⚠ balance: {e}[/yellow]")
     return _cached_balance
 
+async def get_available_margin(client: AsyncClient) -> float:
+    """Free USDT margin available for NEW positions — i.e. wallet minus margin
+    already locked by open positions. This is what -2019 actually checks."""
+    try:
+        for b in await client.futures_account_balance():
+            if b["asset"] == "USDT":
+                return float(b.get("availableBalance", b.get("balance", 0.0)))
+    except Exception as e:
+        console.print(f"[yellow]⚠ avail margin: {e}[/yellow]")
+    return 0.0
+
 
 async def cancel_open_orders(client: AsyncClient, symbol: str):
     try:
@@ -778,17 +789,33 @@ async def open_position(client: AsyncClient, symbol: str, side: str, balance: fl
     risk_usdt = balance * RISK_PERCENT
     raw_qty   = (risk_usdt * LEVERAGE) / sl_distance
     info      = await get_symbol_info(client, symbol)
-    qty       = _round_step(raw_qty, info["step_size"])
-    qty       = max(qty, info["min_qty"])
 
-    if qty * price < info["min_notional"]:
-        console.print(f"[yellow]⚠ {symbol} notional too small ({qty*price:.2f} USDT)[/yellow]")
+    qty       = _round_step(raw_qty, info["step_size"])
+
+    # ── Cap size by ACTUALLY-available margin (prevents APIError -2019) ──
+    MARGIN_SAFETY  = 0.95   # headroom for taker fees + entry slippage
+    avail          = await get_available_margin(client)
+    max_qty_margin = (avail * MARGIN_SAFETY * LEVERAGE) / price if price > 0 else 0.0
+    if max_qty_margin < qty:
+        qty = _round_step(max_qty_margin, info["step_size"])
+
+    # Floor at the exchange minimum, then re-verify it still fits in margin.
+    qty             = max(qty, info["min_qty"])
+    required_margin = qty * price / LEVERAGE
+
+    if qty * price < info["min_notional"] or required_margin > avail * MARGIN_SAFETY:
+        console.print(
+            f"[yellow]⚠ {symbol} can't size order — need ${required_margin:,.2f} "
+            f"margin, have ${avail:,.2f}; cooling down[/yellow]"
+        )
+        cooldown_until[symbol] = time.time() + COOLDOWN_AFTER_LOSS
         return False
 
     order_side = SIDE_BUY if side == "LONG" else SIDE_SELL
     if not await _place_market(client, symbol, order_side, qty):
+        cooldown_until[symbol] = time.time() + COOLDOWN_AFTER_LOSS   # stop per-tick retry
         return False
-
+    
     sl_price  = price - sl_distance  if side == "LONG" else price + sl_distance
     tp1_price = price + tp1_distance if side == "LONG" else price - tp1_distance
     tp2_price = price + tp2_distance if side == "LONG" else price - tp2_distance
