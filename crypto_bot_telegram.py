@@ -130,6 +130,7 @@ LOG_TXT_FILE       = Path("bot.log")    # human-readable event log (pushed to Te
 STATUS_INTERVAL    = 1800   # seconds between Telegram status summaries (signals + positions)
 LOG_SEND_INTERVAL  = 3600   # seconds between automatic bot.log document pushes
 TG_SIGNAL_DEBOUNCE = 60     # min seconds between signal-change alerts per symbol
+POSITION_ADOPT_GRACE = 10   # sec: don't clear/adopt within this of a local open (open→sync race)
 
 # ╔══════════════════════════════════════════════════════════════════╗
 # ║                          CLIENTS                               ║
@@ -543,6 +544,63 @@ def _round_step(value: float, step: float) -> float:
     precision = max(0, round(-math.log10(step)))
     return round(round(value / step) * step, precision)
 
+async def _adopt_position(
+    client: AsyncClient, symbol: str, side: str,
+    qty: float, entry: float, unrealized: float, pnl_pct: float,
+):
+    """
+    Reconstruct full management state for a position found on the exchange that
+    the bot isn't tracking (manual open, restart, or side flip), so the software
+    SL/TP/trail engine can manage it automatically. Also ensures a hard
+    catastrophic SL exists on the exchange for the adopted size.
+    """
+    d   = market_data[symbol]
+    atr = d["atr"] if d["atr"] > 0 else entry * 0.005   # fallback if indicators not loaded yet
+
+    sl_distance  = atr * ATR_SL_MULT
+    tp1_distance = atr * ATR_TP1_MULT
+    tp2_distance = atr * ATR_TP2_MULT
+
+    if side == "LONG":
+        sl_price, tp1_price, tp2_price = (
+            entry - sl_distance, entry + tp1_distance, entry + tp2_distance)
+    else:
+        sl_price, tp1_price, tp2_price = (
+            entry + sl_distance, entry - tp1_distance, entry - tp2_distance)
+
+    info      = await get_symbol_info(client, symbol)
+    sl_price  = _round_step(sl_price,  info["tick_size"])
+    tp1_price = _round_step(tp1_price, info["tick_size"])
+    tp2_price = _round_step(tp2_price, info["tick_size"])
+
+    # Replace any stray orders with a fresh hard SL for the actual adopted size
+    await cancel_open_orders(client, symbol)
+    sl_id, _ = await place_bracket_orders(client, symbol, side, qty, sl_price, tp1_price)
+
+    market_data[symbol]["position"] = {
+        **_empty_position(),
+        "side":         side,
+        "qty":          qty,
+        "entry":        entry,
+        "sl_price":     sl_price,
+        "tp1_price":    tp1_price,
+        "tp2_price":    tp2_price,
+        "trail_best":   entry,
+        "trail_stop":   sl_price,
+        "pnl_pct":      pnl_pct,
+        "pnl_usdt":     unrealized,
+        "sl_order_id":  sl_id,
+        "open_time":    time.time(),
+    }
+    console.print(
+        f"[cyan]🧬 Adopted {side} {symbol} @ ${entry:,.4f} | "
+        f"SL ${sl_price:,.4f}  TP1 ${tp1_price:,.4f}  TP2 ${tp2_price:,.4f}[/cyan]"
+    )
+    notify(
+        f"🧬 Adopted existing {side} {symbol} @ ${entry:,.4f}\n"
+        f"SL ${sl_price:,.4f} | TP1 ${tp1_price:,.4f} | TP2 ${tp2_price:,.4f}",
+        "TRADE",
+    )
 
 async def sync_positions(client: AsyncClient):
     try:
@@ -551,22 +609,48 @@ async def sync_positions(client: AsyncClient):
             sym = p["symbol"]
             if sym not in market_data:
                 continue
+
             qty = float(p.get("positionAmt", 0))
             pos = market_data[sym]["position"]
+            now = time.time()
+
+            # ── Exchange flat → clear local state ─────────────────────────────
             if qty == 0:
-                if pos["side"] is not None and not pos["tp1_hit"]:
+                # Grace guard: a just-opened position may not show up yet.
+                if (pos["side"] is not None
+                        and now - pos.get("open_time", 0.0) >= POSITION_ADOPT_GRACE):
                     market_data[sym]["position"] = _empty_position()
                 continue
+
             entry      = float(p.get("entryPrice", 0))
             unrealized = float(p.get("unRealizedProfit", 0))
             pnl_pct    = (unrealized / (abs(qty) * entry) * 100) if entry > 0 else 0.0
-            pos.update({
-                "side":     "LONG" if qty > 0 else "SHORT",
-                "qty":      abs(qty),
-                "entry":    entry,
-                "pnl_pct":  pnl_pct,
-                "pnl_usdt": unrealized,
-            })
+            side       = "LONG" if qty > 0 else "SHORT"
+
+            # Untracked = manual open, post-restart recovery, or a side flip the
+            # bot didn't register. Anything with no SL level can't be managed.
+            untracked = (
+                pos["side"] is None
+                or pos["side"] != side
+                or pos["sl_price"] <= 0
+            )
+
+            if untracked:
+                # Don't fight a position we opened microseconds ago.
+                if now - pos.get("open_time", 0.0) < POSITION_ADOPT_GRACE:
+                    pos.update({"qty": abs(qty), "entry": entry,
+                                "pnl_pct": pnl_pct, "pnl_usdt": unrealized})
+                    continue
+                await _adopt_position(client, sym, side, abs(qty),
+                                      entry, unrealized, pnl_pct)
+            else:
+                # Already managed → just refresh live numbers.
+                pos.update({
+                    "qty":      abs(qty),
+                    "entry":    entry,
+                    "pnl_pct":  pnl_pct,
+                    "pnl_usdt": unrealized,
+                })
     except Exception as e:
         console.print(f"[yellow]⚠ sync_positions: {e}[/yellow]")
 
