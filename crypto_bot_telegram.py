@@ -488,6 +488,28 @@ async def get_symbol_info(client: AsyncClient, symbol: str) -> dict:
         console.print(f"[yellow]⚠ get_symbol_info: {e}[/yellow]")
     return {"step_size": 0.001, "tick_size": 0.01, "min_qty": 0.001, "min_notional": 5.0}
 
+def _new_market_entry() -> dict:
+    return {
+        "price": 0.0, "price_ts": 0.0,
+        "rsi_15": 50.0, "rsi_1h": 50.0,
+        "sma20": 0.0, "ema50": 0.0, "ema200": 0.0,
+        "macd": 0.0, "macd_sig": 0.0,
+        "atr": 0.0, "adx": 0.0,
+        "bb_squeeze": False, "volume_ok": False,
+        "signal": "HOLD", "hold_reason": "", "sentiment": "NEUTRAL",
+        "ind_ts": 0.0,
+        "position": _empty_position(),
+    }
+
+
+def ensure_symbol_state(sym: str):
+    """Guarantee every per-symbol dict has an entry for `sym`.
+    Safe to call repeatedly — only fills what's missing."""
+    if sym not in market_data:
+        market_data[sym] = _new_market_entry()
+    analyses.setdefault(sym, "🔄 Initialising…")
+    analysis_time.setdefault(sym, 0.0)
+    cooldown_until.setdefault(sym, 0.0)
 
 async def filter_tradable_symbols(client: AsyncClient):
     """
@@ -530,6 +552,8 @@ async def filter_tradable_symbols(client: AsyncClient):
     extra_choices = [s for s in live_pool if s not in kept]
     random.shuffle(extra_choices)
     SYMBOLS[:] = kept + extra_choices[:need]
+    for sym in SYMBOLS:
+        ensure_symbol_state(sym)
     if SYMBOLS:
         MAIN_SYMBOL = SYMBOLS[0]
 
@@ -1731,6 +1755,9 @@ def print_plain_status(balance: float):
 
 async def trading_loop(client: AsyncClient, live, state: dict):
     global _indicator_index, _last_indicator_tick
+
+    for sym in SYMBOLS:
+        ensure_symbol_state(sym)
 
     now = time.time()
 

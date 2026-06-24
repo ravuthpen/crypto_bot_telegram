@@ -5,6 +5,12 @@ aiohttp>=3.9.0
 python-dotenv>=1.0.0
 rich>=13.7.0
 
+# ── WebSocket pin ────────────────────────────────────────────────────────────
+# python-binance 1.0.19 calls websockets' legacy .fail_connection(), removed
+# in websockets 14. Without this pin pip pulls 14.x and every socket teardown
+# raises: 'ClientConnection' object has no attribute 'fail_connection'.
+websockets>=11,<14
+
 # ── Data ─────────────────────────────────────────────────────────────────────
 # Technical indicators are computed in indicators.py (pure pandas/numpy),
 # so we no longer depend on the unmaintained pandas_ta package.
