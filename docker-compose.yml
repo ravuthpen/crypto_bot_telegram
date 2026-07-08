@@ -5,6 +5,7 @@ services:
     container_name: ai-futures-trader
     restart: unless-stopped
 
+<<<<<<< HEAD
     working_dir: /app
 
     env_file:
@@ -16,18 +17,45 @@ services:
     tty: true
     stdin_open: true
 
+=======
+    # Load API keys / Telegram config from .env (NOT baked into the image)
+    env_file:
+      - .env
+
+    # Persist trades.csv and crypto_bot_telegram.log on the host
+    volumes:
+      - ./data:/app/data
+
+    # The bot's rich dashboard needs a TTY to render
+    tty: true
+    stdin_open: true
+
+    # Keep container clock in sync with host timezone (optional)
+    # Headless: print plain status lines (not the rich dashboard) so
+    # `docker compose logs` is readable. Set DASHBOARD=1 if you attach a TTY.
+>>>>>>> 162b07b (push full code)
     environment:
       - TZ=UTC
       - DASHBOARD=0
 
+<<<<<<< HEAD
+=======
+    # Prevent Docker's json log file from growing unbounded
+>>>>>>> 162b07b (push full code)
     logging:
       driver: "json-file"
       options:
         max-size: "10m"
         max-file: "5"
 
+<<<<<<< HEAD
     healthcheck:
       test: ["CMD-SHELL", "pgrep -f main.py || exit 1"]
+=======
+    # Restart if the process wedges (optional, basic liveness)
+    healthcheck:
+      test: ["CMD-SHELL", "pgrep -f crypto_bot_telegram.py || exit 1"]
+>>>>>>> 162b07b (push full code)
       interval: 60s
       timeout: 10s
       retries: 3
