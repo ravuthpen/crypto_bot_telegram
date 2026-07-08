@@ -40,7 +40,12 @@ def rsi(close: pd.Series, length: int = 14) -> pd.Series:
     avg_loss = loss.ewm(alpha=1 / length, min_periods=length, adjust=False).mean()
     rs  = avg_gain / avg_loss.replace(0.0, np.nan)
     out = 100.0 - (100.0 / (1.0 + rs))
-    return out.fillna(100.0)   # if avg_loss==0 → RSI 100
+    # No downside in the window → RSI 100. Crucially, only force 100 where we
+    # actually have data; the warm-up rows (avg_gain/avg_loss still NaN) must
+    # stay NaN so a caller's "is this fresh?" / fillna-fallback logic works,
+    # instead of being silently reported as a maxed-out 100.
+    out = out.mask((avg_loss == 0.0) & avg_gain.notna(), 100.0)
+    return out
 
 
 def _true_range(high: pd.Series, low: pd.Series, close: pd.Series) -> pd.Series:
